@@ -70,33 +70,86 @@ async function imageToCanvas(file, scale=1.8){
 }
 
 async function ocrImage(file){
-  const c=await imageToCanvas(file);
-  const blob=await new Promise(r=>c.toBlob(r,"image/png"));
-  const url=URL.createObjectURL(blob);
-  try{
-    const out=await ocr(url,{max_new_tokens:180});
-    return clean(out?.[0]?.generated_text||"");
-  }finally{URL.revokeObjectURL(url)}
-}
+  const c=await imageToCanvas(file,1.25);
+  const ctx=c.getContext("2d");
+  const W=c.width, H=c.height;
 
-function splitQuestions(text){
-  // Heuristics: OCR may or may not preserve "1.", "2.", etc.
-  const lines=(text||"").split(/\n+/).map(clean).filter(Boolean);
-  const q=[[],[],[],[],[]]; let current=-1;
-  for(const line of lines){
-    const m=line.match(/^(?:soal\s*)?([1-5])\s*[\).:\-]/i);
-    if(m) current=Number(m[1])-1;
-    if(current>=0) q[current].push(line.replace(/^(?:soal\s*)?[1-5]\s*[\).:\-]\s*/i,""));
+  // TrOCR is line-oriented. Read overlapping horizontal bands instead
+  // of sending the entire answer sheet as one image.
+  const bandH=Math.max(180,Math.round(H/8));
+  const overlap=Math.round(bandH*0.25);
+  const step=bandH-overlap;
+  const texts=[];
+
+  for(let y=0;y<H;y+=step){
+    const h=Math.min(bandH,H-y);
+    const crop=document.createElement("canvas");
+    crop.width=W; crop.height=h;
+    const cc=crop.getContext("2d");
+
+    // Light normalization: white background + grayscale/contrast.
+    cc.fillStyle="#fff";
+    cc.fillRect(0,0,W,h);
+    cc.drawImage(c,0,y,W,h,0,0,W,h);
+
+    const data=cc.getImageData(0,0,W,h);
+    for(let i=0;i<data.data.length;i+=4){
+      const r=data.data[i], g=data.data[i+1], b=data.data[i+2];
+      let v=0.299*r+0.587*g+0.114*b;
+      v=Math.max(0,Math.min(255,(v-128)*1.18+128));
+      data.data[i]=data.data[i+1]=data.data[i+2]=v;
+    }
+    cc.putImageData(data,0,0);
+
+    const blob=await new Promise(r=>crop.toBlob(r,"image/png"));
+    const url=URL.createObjectURL(blob);
+    try{
+      const out=await ocr(url,{max_new_tokens:80});
+      const t=clean(out?.[0]?.generated_text||"");
+      if(t && t.length>2) texts.push(t);
+    }finally{
+      URL.revokeObjectURL(url);
+    }
   }
-  if(q.every(x=>x.length===0)){
-    // Fallback: divide by approximate text length.
-    const words=(text||"").split(/\s+/).filter(Boolean);
-    const n=Math.max(1,Math.ceil(words.length/5));
-    for(let i=0;i<5;i++) q[i]=words.slice(i*n,(i+1)*n);
+
+  // Remove consecutive duplicate text caused by overlapping bands.
+  const result=[];
+  for(const t of texts){
+    if(!result.length || t.toLowerCase()!==result[result.length-1].toLowerCase())
+      result.push(t);
+  }
+  return result.join("\n");
+}
+function splitQuestions(text){
+  const lines=(text||"").split(/\n+/).map(clean).filter(Boolean);
+  const q=[[],[],[],[],[]];
+  let current=-1;
+
+  for(const line of lines){
+    const m=line.match(/^(?:soal|jawaban)?\s*([1-5])\s*[\).:\-]/i);
+    if(m) current=Number(m[1])-1;
+    if(current>=0){
+      q[current].push(line.replace(/^(?:soal|jawaban)?\s*[1-5]\s*[\).:\-]\s*/i,""));
+    }
+  }
+
+  if(q.some(x=>x.length) && q.filter(x=>x.length).length>=2)
+    return q.map(x=>clean(x.join(" ")));
+
+  // Fallback: paragraph-based distribution. Do not pretend a word-level
+  // split is a question boundary.
+  const paragraphs=lines.filter(x=>x.length>=8);
+  const n=paragraphs.length;
+  if(n>=5){
+    for(let i=0;i<5;i++){
+      const a=Math.floor(i*n/5), b=Math.floor((i+1)*n/5);
+      q[i]=paragraphs.slice(a,b);
+    }
+  }else if(n){
+    q[0]=paragraphs;
   }
   return q.map(x=>clean(x.join(" ")));
 }
-
 function scoreAnswer(answer,rubric){
   const t=tokens(answer);
   if(t.length<4) return {score:0,confidence:0,reason:"Tulisan yang terbaca terlalu sedikit."};
@@ -120,7 +173,7 @@ function scoreAnswer(answer,rubric){
   const reason=found.length
     ? `Konsep terdeteksi: ${found.slice(0,8).join(", ")}.`
     : "Belum ditemukan konsep kunci yang cukup.";
-  return {score,confidence,reason};
+  return {nilai:score,confidence,alasan:reason};
 }
 
 function extractName(text){
@@ -156,8 +209,9 @@ $("start").addEventListener("click", async()=>{
       const answers=splitQuestions(text);
       const questions=answers.map((a,j)=>({q:`Q${j+1}`,jawaban:a,...scoreAnswer(a,rub[j])}));
       const total=questions.reduce((s,x)=>s+x.score,0);
+      const readableWords=tokens(text).length;
       const low=questions.filter(x=>x.confidence<35||x.jawaban.length<8).length;
-      const row={name:extractName(text),file:file.name,total,status:low>=2?"PERLU CEK":"Selesai",questions,ocr:text};
+      const row={name:extractName(text),file:file.name,total,status:(readableWords<8||low>=2)?"PERLU CEK":"Selesai",questions,ocr:text};
       outputRows.push(row); results.insertAdjacentHTML("beforeend",renderRow(row,i));
     }
     setStatus("Selesai. Hasil di bawah dapat diperiksa dan diekspor.",100);
