@@ -2,56 +2,51 @@
 <html lang="id">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NilaiKita — Penilaian Jawaban Esai</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>NilaiKita — Penilaian Esai Tulisan Tangan</title>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;background:#0d0d12;color:#f5f5f7}
-.wrap{max-width:1100px;margin:auto;padding:20px}.card{background:#171720;border:1px solid #2b2b36;border-radius:18px;padding:18px;margin:14px 0}
-h1{margin:0 0 6px;font-size:28px}.muted{color:#aaa}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
-label{display:block;font-weight:700;margin-bottom:6px}select,input,button{width:100%;padding:12px;border-radius:10px;border:1px solid #393945;background:#101017;color:white}
-button{cursor:pointer;font-weight:700}button.primary{background:#6d43d8;border:0}button:disabled{opacity:.5;cursor:not-allowed}
-.drop{border:2px dashed #44445a;padding:25px;text-align:center;border-radius:14px}
-.status{padding:10px;border-radius:10px;background:#101017;margin-top:10px}
-.progress{height:8px;background:#292933;border-radius:8px;overflow:hidden}.bar{height:100%;width:0;background:#8b67e8;transition:.2s}
-table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:9px;border-bottom:1px solid #30303a;text-align:left;vertical-align:top}
-.score{font-size:24px;font-weight:800}.ok{color:#7ee787}.warn{color:#ffd166}
-.small{font-size:13px;color:#aaa}.answer{white-space:pre-wrap;max-height:180px;overflow:auto}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0b1020;color:#eef2ff}
+.wrap{max-width:1100px;margin:auto;padding:18px}.hero{padding:22px 0}.hero h1{margin:0 0 6px;font-size:30px}.hero p{margin:0;color:#aab4d0}
+.card{background:#121a2f;border:1px solid #25304d;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 8px 30px #0004}
+button,.filelabel{border:0;border-radius:12px;padding:12px 16px;font-weight:700;cursor:pointer;background:#6d5dfc;color:white;display:inline-block}
+button.secondary{background:#26334f}.filelabel input{display:none}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+#status{margin-top:12px;color:#b9c4df;white-space:pre-line}.progress{height:9px;background:#222d48;border-radius:99px;overflow:hidden;margin-top:10px}.bar{height:100%;width:0;background:#7c6cff;transition:.2s}
+.result{border:1px solid #293654;border-radius:14px;padding:14px;margin:10px 0;background:#0f172a}.result h3{margin:0 0 5px}.score{font-size:26px;font-weight:800}.warn{color:#ffd166}.ok{color:#7ee787}
+table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:9px;border-bottom:1px solid #293654;text-align:left;vertical-align:top}small{color:#98a6c7}
+textarea{width:100%;min-height:90px;background:#0b1222;color:white;border:1px solid #34415f;border-radius:10px;padding:10px}
+.hidden{display:none}.pill{display:inline-block;padding:5px 9px;border-radius:99px;background:#26334f;margin:3px;font-size:12px}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="card">
-    <h1>NilaiKita — FULL LOCAL</h1>
-    <div class="muted">Pembacaan tulisan tangan dan penilaian berjalan di browser. Tidak memakai API key.</div>
+  <div class="hero">
+    <h1>NilaiKita</h1>
+    <p>Penilaian esai tulisan tangan — berjalan langsung di browser, tanpa API key.</p>
   </div>
 
   <div class="card">
-    <div class="grid">
-      <div>
-        <label for="subject">Mata Pelajaran</label>
-        <select id="subject">
-          <option value="X">X — Seni Rupa</option>
-          <option value="XI">XI — Seni Tari</option>
-          <option value="XII">XII — Seni Musik</option>
-        </select>
-      </div>
-      <div>
-        <label for="files">Lembar Jawaban</label>
-        <input id="files" type="file" accept="image/*" multiple>
-      </div>
+    <h2>1. Upload lembar jawaban</h2>
+    <div class="row">
+      <label class="filelabel">📷 Pilih foto (1–10)<input id="files" type="file" accept="image/*" multiple></label>
+      <button id="start">Mulai Penilaian</button>
+      <button class="secondary" id="download" disabled>Unduh CSV</button>
     </div>
-    <div class="drop" id="drop">Pilih atau seret beberapa foto lembar jawaban ke sini.</div>
-    <div style="height:12px"></div>
-    <button class="primary" id="start">Mulai Baca & Nilai</button>
-    <div class="status" id="status">Belum dimulai.</div>
-    <div class="progress"><div class="bar" id="bar"></div></div>
+    <div id="status">Belum ada foto.</div>
+    <div class="progress"><div id="bar" class="bar"></div></div>
   </div>
 
   <div class="card">
-    <button id="csv" disabled>Ekspor CSV</button>
-    <div id="results"></div>
+    <h2>2. Hasil</h2>
+    <div id="results"><small>Hasil akan muncul di sini.</small></div>
+  </div>
+
+  <div class="card">
+    <h2>Rubrik</h2>
+    <small>Rubrik bawaan untuk Seni Rupa X, Seni Tari XI, dan Seni Musik XII. Penilaian lokal menggunakan konsep/kriteria jawaban, bukan kecocokan satu kata.</small>
   </div>
 </div>
+
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 <script type="module" src="./app.js"></script>
 </body>
 </html>

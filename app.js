@@ -1,232 +1,204 @@
-import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
-
-env.allowLocalModels = false;
-env.useBrowserCache = true;
+import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2";
 
 const $ = id => document.getElementById(id);
-const status = $("status"), bar = $("bar"), results = $("results"), csvBtn = $("csv");
-let selectedFiles = [], outputRows = [];
+let ocr = null, allResults = [];
 
 const RUBRICS = {
-X: [
- {q:"Q1", concepts:["seni","karya","ekspresi","budaya","keindahan"], max:20},
- {q:"Q2", concepts:["kesatuan","unity","keseimbangan","balance","irama","ritme","penekanan","proporsi","harmoni","komposisi"], max:20},
- {q:"Q3", concepts:["titik","garis","bidang","bentuk","ruang","warna","tekstur"], max:20},
- {q:"Q4", concepts:["primer","sekunder","tersier","netral","merah","kuning","biru","hijau","oranye","ungu"], max:20},
- {q:"Q5", concepts:["murni","pure","terapan","fungsi","guna","hias","lukisan","patung","kriya","desain"], max:20}
-],
-XI: [
- {q:"Q1", concepts:["seni","ekspresi","perasaan","gagasan","karya"], max:20},
- {q:"Q2", concepts:["tenaga","ruang","waktu","gerak","level","arah","tempo","dinamika"], max:20},
- {q:"Q3", concepts:["wiraga","wirasa","wirama","gerak","rasa","irama","keselarasan"], max:20},
- {q:"Q4", concepts:["imitatif","meniru","alam","hewan","manusia","imajinatif","khayalan","kreasi"], max:20},
- {q:"Q5", concepts:["tema","eksplorasi","improvisasi","komposisi","evaluasi","gerak","iringan","pola"], max:20}
-],
-XII: [
- {q:"Q1", concepts:["klasik","tradisional","modern","kontemporer","zaman","perkembangan","budaya"], max:20},
- {q:"Q2", concepts:["tempo","ritme","irama","melodi","harmoni","dinamika","timbre","birama"], max:20},
- {q:"Q3", concepts:["hari musik dunia","melodis","harmonis","ritmis","melodi","harmoni","ritme","iringan"], max:20},
- {q:"Q4", concepts:["cara memainkan","dipukul","dipetik","ditiup","digesek","digoyang","tekan","contoh","instrumen"], max:20},
- {q:"Q5", concepts:["sumber bunyi","idiofon","membranofon","kordofon","aerofon","elektrofon","contoh"], max:20}
-]};
+  rupa: [
+    {q:"Q1", max:20, concepts:["seni","karya","ekspresi","budaya","perasaan","gagasan"], cues:["ungkapan","manusia","keindahan","kreativitas"]},
+    {q:"Q2", max:20, concepts:["kesatuan","keseimbangan","irama","penekanan","proporsi","keselarasan","komposisi"]},
+    {q:"Q3", max:20, concepts:["titik","garis","bidang","bentuk","ruang","warna","tekstur"]},
+    {q:"Q4", max:20, concepts:["primer","sekunder","tersier","netral","merah","kuning","biru","hijau","oranye","ungu"]},
+    {q:"Q5", max:20, concepts:["murni","terapan","fungsi","keindahan","kriya","desain","lukisan","kerajinan"]}
+  ],
+  tari: [
+    {q:"Q1", max:20, concepts:["seni","ekspresi","keindahan","gagasan","perasaan"]},
+    {q:"Q2", max:20, concepts:["tenaga","ruang","waktu","kuat","lemah","arah","level","tempo","ritme"]},
+    {q:"Q3", max:20, concepts:["wiraga","wirasa","wirama","gerak","rasa","irama"]},
+    {q:"Q4", max:20, concepts:["imitatif","imajinatif","meniru","hewan","alam","khayalan","gagasan"]},
+    {q:"Q5", max:20, concepts:["tema","eksplorasi","improvisasi","komposisi","evaluasi","gerak","iringan"]}
+  ],
+  musik: [
+    {q:"Q1", max:20, concepts:["klasik","tradisional","modern","kontemporer","zaman","budaya","teknologi"]},
+    {q:"Q2", max:20, concepts:["tempo","ritme","melodi","harmoni","dinamika","timbre","birama"]},
+    {q:"Q3", max:20, concepts:["melodis","harmonis","ritmis","melodi","akor","irama","ritme"]},
+    {q:"Q4", max:20, concepts:["cara memainkan","dipukul","ditiup","dipetik","digesek","ditekan","digetarkan"]},
+    {q:"Q5", max:20, concepts:["idiofon","membranofon","kordofon","aerofon","elektrofon","sumber bunyi"]}
+  ]
+};
 
-let ocr = null;
-
-$("files").addEventListener("change", e => {
-  selectedFiles = [...e.target.files];
-  $("drop").textContent = `${selectedFiles.length} foto dipilih.`;
-});
-["dragover","dragenter"].forEach(ev => $("drop").addEventListener(ev,e=>{e.preventDefault()}));
-$("drop").addEventListener("drop",e=>{
-  e.preventDefault();
-  selectedFiles=[...e.dataTransfer.files].filter(f=>f.type.startsWith("image/"));
-  $("drop").textContent=`${selectedFiles.length} foto dipilih.`;
-});
-
-function setStatus(t,p=null){
-  status.textContent=t;
-  if(p!==null) bar.style.width=`${Math.max(0,Math.min(100,p))}%`;
+function normalize(s){
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^a-z0-9\s.,!?-]/g," ").replace(/\s+/g," ").trim();
 }
-function clean(s){return (s||"").replace(/\s+/g," ").trim()}
-function tokens(s){return clean(s).toLowerCase().replace(/[^a-z0-9À-ÿ\s-]/gi," ").split(/\s+/).filter(Boolean)}
+function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 
 async function loadOCR(){
   if(ocr) return;
-  setStatus("Memuat model pembaca tulisan tangan. Pertama kali bisa cukup lama...",5);
-  ocr = await pipeline("image-to-text","Xenova/trocr-small-handwritten",{
-    dtype:"q8",
-    device:"wasm"
+  setStatus("Memuat mesin OCR tulisan tangan. Pada pemakaian pertama proses ini bisa cukup lama...");
+  ocr = await pipeline("image-to-text","Xenova/trocr-base-handwritten",{device:"wasm"});
+}
+
+function setStatus(s){$("status").textContent=s}
+function progress(v){$("bar").style.width=Math.max(0,Math.min(100,v))+"%"}
+
+function imageFromFile(file){
+  return new Promise((resolve,reject)=>{
+    const img=new Image(); img.onload=()=>resolve(img); img.onerror=reject;
+    img.src=URL.createObjectURL(file);
   });
 }
 
-async function imageToCanvas(file, scale=1.8){
-  const bmp=await createImageBitmap(file);
-  const c=document.createElement("canvas");
-  c.width=Math.min(2200,Math.round(bmp.width*scale));
-  c.height=Math.min(3200,Math.round(bmp.height*scale));
-  const ctx=c.getContext("2d");
-  ctx.drawImage(bmp,0,0,c.width,c.height);
+function canvasFromImage(img,maxSide=1800){
+  const scale=Math.min(1,maxSide/Math.max(img.naturalWidth||img.width,img.naturalHeight||img.height));
+  const c=document.createElement("canvas"); c.width=Math.round(img.width*scale); c.height=Math.round(img.height*scale);
+  c.getContext("2d").drawImage(img,0,0,c.width,c.height); return c;
+}
+
+/* Detect horizontal answer lines. The form's printed ruled lines make this much
+   more stable than sending the whole page to TrOCR. */
+function lineBoxes(canvas){
+  const ctx=canvas.getContext("2d"), w=canvas.width,h=canvas.height;
+  const data=ctx.getImageData(0,0,w,h).data;
+  const rows=[]; const step=Math.max(2,Math.floor(w/900));
+  for(let y=Math.floor(h*.14);y<Math.floor(h*.97);y+=2){
+    let dark=0, total=0;
+    for(let x=Math.floor(w*.08);x<Math.floor(w*.93);x+=step){
+      const i=(y*w+x)*4, g=(data[i]+data[i+1]+data[i+2])/3;
+      if(g<155) dark++; total++;
+    }
+    rows.push([y,dark/Math.max(1,total)]);
+  }
+  const peaks=rows.filter((r,i)=>r[1]>.16 && (i===0||r[1]>=rows[i-1][1]) && (i===rows.length-1||r[1]>=rows[i+1][1])).map(x=>x[0]);
+  const grouped=[];
+  for(const y of peaks){
+    if(!grouped.length||y-grouped[grouped.length-1]>7) grouped.push(y);
+    else grouped[grouped.length-1]=(grouped[grouped.length-1]+y)/2;
+  }
+  const boxes=[];
+  for(let i=0;i<grouped.length-1;i++){
+    const y1=grouped[i]+4, y2=grouped[i+1]-3;
+    if(y2-y1<8||y2-y1>100) continue;
+    boxes.push({x:Math.floor(w*.10),y:y1,w:Math.floor(w*.82),h:y2-y1});
+  }
+  return boxes.slice(0,80);
+}
+
+function cropLine(canvas,b){
+  const c=document.createElement("canvas"); c.width=b.w; c.height=Math.max(32,b.h);
+  const ctx=c.getContext("2d"); ctx.fillStyle="#fff"; ctx.fillRect(0,0,c.width,c.height);
+  ctx.drawImage(canvas,b.x,b.y,b.w,b.h,0,0,c.width,c.height);
   return c;
 }
 
-async function ocrImage(file){
-  const c=await imageToCanvas(file,1.25);
-  const ctx=c.getContext("2d");
-  const W=c.width, H=c.height;
-
-  // TrOCR is line-oriented. Read overlapping horizontal bands instead
-  // of sending the entire answer sheet as one image.
-  const bandH=Math.max(180,Math.round(H/8));
-  const overlap=Math.round(bandH*0.25);
-  const step=bandH-overlap;
-  const texts=[];
-
-  for(let y=0;y<H;y+=step){
-    const h=Math.min(bandH,H-y);
-    const crop=document.createElement("canvas");
-    crop.width=W; crop.height=h;
-    const cc=crop.getContext("2d");
-
-    // Light normalization: white background + grayscale/contrast.
-    cc.fillStyle="#fff";
-    cc.fillRect(0,0,W,h);
-    cc.drawImage(c,0,y,W,h,0,0,W,h);
-
-    const data=cc.getImageData(0,0,W,h);
-    for(let i=0;i<data.data.length;i+=4){
-      const r=data.data[i], g=data.data[i+1], b=data.data[i+2];
-      let v=0.299*r+0.587*g+0.114*b;
-      v=Math.max(0,Math.min(255,(v-128)*1.18+128));
-      data.data[i]=data.data[i+1]=data.data[i+2]=v;
-    }
-    cc.putImageData(data,0,0);
-
-    const blob=await new Promise(r=>crop.toBlob(r,"image/png"));
-    const url=URL.createObjectURL(blob);
-    try{
-      const out=await ocr(url,{max_new_tokens:80});
-      const t=clean(out?.[0]?.generated_text||"");
-      if(t && t.length>2) texts.push(t);
-    }finally{
-      URL.revokeObjectURL(url);
-    }
+function cleanLine(c){
+  const ctx=c.getContext("2d"), img=ctx.getImageData(0,0,c.width,c.height), d=img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+    const v=g<185?20:255;
+    d[i]=d[i+1]=d[i+2]=v;
   }
-
-  // Remove consecutive duplicate text caused by overlapping bands.
-  const result=[];
-  for(const t of texts){
-    if(!result.length || t.toLowerCase()!==result[result.length-1].toLowerCase())
-      result.push(t);
-  }
-  return result.join("\n");
+  ctx.putImageData(img,0,0);
+  return c;
 }
-function splitQuestions(text){
-  const lines=(text||"").split(/\n+/).map(clean).filter(Boolean);
+
+async function ocrLine(c){
+  const out=await ocr(c,{max_new_tokens:80,num_beams:2});
+  return (out?.[0]?.generated_text||"").trim();
+}
+
+function splitQuestions(lines){
   const q=[[],[],[],[],[]];
   let current=-1;
-
-  for(const line of lines){
-    const m=line.match(/^(?:soal|jawaban)?\s*([1-5])\s*[\).:\-]/i);
-    if(m) current=Number(m[1])-1;
-    if(current>=0){
-      q[current].push(line.replace(/^(?:soal|jawaban)?\s*[1-5]\s*[\).:\-]\s*/i,""));
-    }
+  for(const raw of lines){
+    const t=raw.trim(); if(!t) continue;
+    const n=t.match(/^\s*([1-5])(?:\s*[\.\):\-]|$)/);
+    if(n) current=Number(n[1])-1;
+    if(current>=0) q[current].push(t);
   }
-
-  if(q.some(x=>x.length) && q.filter(x=>x.length).length>=2)
-    return q.map(x=>clean(x.join(" ")));
-
-  // Fallback: paragraph-based distribution. Do not pretend a word-level
-  // split is a question boundary.
-  const paragraphs=lines.filter(x=>x.length>=8);
-  const n=paragraphs.length;
-  if(n>=5){
-    for(let i=0;i<5;i++){
-      const a=Math.floor(i*n/5), b=Math.floor((i+1)*n/5);
-      q[i]=paragraphs.slice(a,b);
-    }
-  }else if(n){
-    q[0]=paragraphs;
-  }
-  return q.map(x=>clean(x.join(" ")));
+  return q.map(a=>a.join(" "));
 }
-function scoreAnswer(answer,rubric){
-  const t=tokens(answer);
-  if(t.length<4) return {score:0,confidence:0,reason:"Tulisan yang terbaca terlalu sedikit."};
-  const joined=t.join(" ");
+
+function scoreAnswer(text,rubric){
+  const s=normalize(text);
+  if(s.length<8) return {nilai:0,alasan:"Jawaban terlalu sedikit atau belum terbaca jelas.",confidence:0.05};
   let hits=0;
   const found=[];
   for(const c of rubric.concepts){
-    const ct=tokens(c);
-    const phrase=ct.join(" ");
-    if(phrase && (ct.length===1 ? t.includes(ct[0]) : joined.includes(phrase))){
-      hits++; found.push(c);
-    }
+    if(s.includes(normalize(c))){hits++;found.push(c);}
   }
-  const coverage=Math.min(1,hits/Math.max(3,Math.ceil(rubric.concepts.length*.45)));
-  const lengthFactor=Math.min(1,t.length/35);
-  const confidence=Math.round((coverage*.7+lengthFactor*.3)*100);
-  let score=Math.round(20*coverage);
-  // Avoid awarding a high score from a single keyword.
-  if(hits<=1) score=Math.min(score,7);
-  if(t.length<8) score=Math.min(score,8);
-  const reason=found.length
-    ? `Konsep terdeteksi: ${found.slice(0,8).join(", ")}.`
-    : "Belum ditemukan konsep kunci yang cukup.";
-  return {nilai:score,confidence,alasan:reason};
+  const words=new Set(s.split(/\s+/));
+  const density=Math.min(1,words.size/55);
+  const coverage=Math.min(1,hits/Math.max(3,Math.min(7,rubric.concepts.length)));
+  let score=Math.round((coverage*.72+density*.28)*20);
+  if(score>20)score=20;
+  let confidence=Math.min(.98,.25+coverage*.6+density*.2);
+  if(s.length<30) confidence*=.8;
+  const reason=found.length?`Konsep terdeteksi: ${found.slice(0,6).join(", ")}.`:"Belum ditemukan konsep kunci yang cukup.";
+  return {nilai:score,alasan:reason,confidence};
 }
 
-function extractName(text){
-  const lines=(text||"").split(/\n+/).map(clean).filter(Boolean);
-  for(const l of lines){
-    const m=l.match(/(?:nama|nama peserta|nama siswa)\s*[:\-]\s*(.+)/i);
-    if(m && m[1].length>2) return m[1].slice(0,80);
+function chooseRubric(text){
+  const s=normalize(text);
+  const sets=Object.entries(RUBRICS).map(([name,rs])=>{
+    const hits=rs.flatMap(r=>r.concepts).filter(c=>s.includes(normalize(c))).length;
+    return [name,hits];
+  }).sort((a,b)=>b[1]-a[1]);
+  return sets[0][1]?sets[0][0]:"rupa";
+}
+
+async function processFile(file,index,total){
+  const img=await imageFromFile(file);
+  const canvas=canvasFromImage(img);
+  const boxes=lineBoxes(canvas);
+  const lines=[];
+  for(let i=0;i<boxes.length;i++){
+    const c=cleanLine(cropLine(canvas,boxes[i]));
+    const text=await ocrLine(c);
+    if(text && text.replace(/\W/g,"").length>=2) lines.push(text);
+    progress(((index+(i+1)/Math.max(1,boxes.length))/total)*100);
   }
-  return "Tanpa Nama";
+  const combined=lines.join(" ");
+  const rubricName=chooseRubric(combined);
+  const answers=splitQuestions(lines);
+  const scores=RUBRICS[rubricName].map((r,i)=>scoreAnswer(answers[i],r));
+  const totalScore=scores.reduce((a,b)=>a+b.nilai,0);
+  const low=scores.filter(x=>x.confidence<.5).length;
+  return {file:file.name,rubric:rubricName,answers,scores,total:totalScore,status:low>=2?"PERLU CEK":"SELESAI"};
 }
 
-function renderRow(r,i){
-  return `<div class="card">
-    <div class="grid"><div><b>${r.name}</b><div class="small">${r.file}</div></div>
-    <div><span class="score">${r.total}/100</span><div class="${r.status==="Selesai"?"ok":"warn"}">${r.status}</div></div></div>
-    <table><thead><tr><th>Soal</th><th>Nilai</th><th>Jawaban terbaca</th><th>Keterangan</th></tr></thead><tbody>
-    ${r.questions.map(x=>`<tr><td>${x.q}</td><td><b>${x.nilai}</b>/20</td><td class="answer">${escapeHtml(x.jawaban||"")}</td><td>${escapeHtml(x.alasan)}<br><span class="small">Kepercayaan: ${x.confidence}%</span></td></tr>`).join("")}
-    </tbody></table>
-  </div>`;
+function render(){
+  $("results").innerHTML=allResults.map((r,idx)=>`
+  <div class="result">
+    <h3>${idx+1}. ${esc(r.file)}</h3>
+    <div><span class="pill">${r.rubric}</span><span class="${r.status==="SELESAI"?"ok":"warn"}">${r.status}</span></div>
+    <div class="score">${r.total}/100</div>
+    <table><thead><tr><th>Soal</th><th>Nilai</th><th>Hasil baca</th><th>Alasan</th></tr></thead>
+    <tbody>${r.scores.map((s,i)=>`<tr><td>Q${i+1}</td><td><b>${s.nilai}/20</b></td><td>${esc(r.answers[i]||"—")}</td><td>${esc(s.alasan)}</td></tr>`).join("")}</tbody></table>
+  </div>`).join("");
 }
-function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 
-$("start").addEventListener("click", async()=>{
-  if(!selectedFiles.length){setStatus("Pilih minimal satu foto terlebih dahulu.");return}
-  $("start").disabled=true; csvBtn.disabled=true; outputRows=[]; results.innerHTML="";
+function csv(){
+  const rows=[["File","Rubrik","Status","Q1","Q2","Q3","Q4","Q5","Total"]];
+  for(const r of allResults) rows.push([r.file,r.rubric,r.status,...r.scores.map(s=>s.nilai),r.total]);
+  const blob=new Blob([rows.map(row=>row.map(v=>`"${String(v).replaceAll('"','""')}"`).join(",")).join("\n")],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="hasil-nilaikita.csv";a.click();
+}
+
+$("start").onclick=async()=>{
+  const files=[...$("files").files].slice(0,10);
+  if(!files.length){setStatus("Pilih minimal satu foto.");return;}
+  $("start").disabled=true;$("download").disabled=true;allResults=[];render();progress(0);
   try{
     await loadOCR();
-    const subject=$("subject").value, rub=RUBRICS[subject];
-    for(let i=0;i<selectedFiles.length;i++){
-      const file=selectedFiles[i];
-      setStatus(`Membaca ${i+1}/${selectedFiles.length}: ${file.name}`,10+(i/selectedFiles.length)*80);
-      const text=await ocrImage(file);
-      const answers=splitQuestions(text);
-      const questions=answers.map((a,j)=>({q:`Q${j+1}`,jawaban:a,...scoreAnswer(a,rub[j])}));
-      const total=questions.reduce((s,x)=>s+x.score,0);
-      const readableWords=tokens(text).length;
-      const low=questions.filter(x=>x.confidence<35||x.jawaban.length<8).length;
-      const row={name:extractName(text),file:file.name,total,status:(readableWords<8||low>=2)?"PERLU CEK":"Selesai",questions,ocr:text};
-      outputRows.push(row); results.insertAdjacentHTML("beforeend",renderRow(row,i));
+    for(let i=0;i<files.length;i++){
+      setStatus(`Mengerjakan foto ${i+1} dari ${files.length}...\nMendeteksi baris dan membaca tulisan tangan.`);
+      allResults.push(await processFile(files[i],i,files.length)); render();
     }
-    setStatus("Selesai. Hasil di bawah dapat diperiksa dan diekspor.",100);
-    csvBtn.disabled=false;
-  }catch(err){
-    console.error(err);
-    setStatus("Terjadi kesalahan: "+(err?.message||err));
-  }finally{$("start").disabled=false}
-});
-
-csvBtn.addEventListener("click",()=>{
-  const rows=[["Nama","File","Q1","Q2","Q3","Q4","Q5","Total","Status"]];
-  for(const r of outputRows) rows.push([r.name,r.file,...r.questions.map(q=>q.nilai),r.total,r.status]);
-  const csv=rows.map(row=>row.map(v=>`"${String(v??"").replaceAll('"','""')}"`).join(",")).join("\n");
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}));
-  a.download="hasil_nilaikita.csv"; a.click(); URL.revokeObjectURL(a.href);
-});
+    setStatus(`Selesai memproses ${files.length} foto.`);
+    $("download").disabled=false;
+  }catch(e){
+    console.error(e); setStatus("Terjadi kesalahan: "+(e?.message||e));
+  }finally{$("start").disabled=false;}
+};
+$("download").onclick=csv;
